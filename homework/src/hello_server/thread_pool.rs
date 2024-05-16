@@ -35,20 +35,24 @@ struct ThreadPoolInner {
 impl ThreadPoolInner {
     /// Increment the job count.
     fn start_job(&self) {
-        todo!()
+        let mut count = self.job_count.lock().unwrap();
+        *count += 1;
     }
 
     /// Decrement the job count.
     fn finish_job(&self) {
-        todo!()
+        let mut count = self.job_count.lock().unwrap();
+        *count -= 1;
+        if *count == 0 {
+            self.empty_condvar.notify_all();
+        }
     }
 
-    /// Wait until the job count becomes 0.
-    ///
-    /// NOTE: We can optimize this function by adding another field to `ThreadPoolInner`, but let's
-    /// not care about that in this homework.
     fn wait_empty(&self) {
-        todo!()
+        let mut count = self.job_count.lock().unwrap();
+        while *count != 0 {
+            count = self.empty_condvar.wait(count).unwrap();
+        }
     }
 }
 
@@ -64,8 +68,32 @@ impl ThreadPool {
     /// Create a new ThreadPool with `size` threads. Panics if the size is 0.
     pub fn new(size: usize) -> Self {
         assert!(size > 0);
+        let (sender, receiver) = unbounded::<Job>();
+        let pool_inner = Arc::new(ThreadPoolInner::default());
+        let mut workers = Vec::with_capacity(size);
 
-        todo!()
+        for id in 0..size {
+            let receiver = receiver.clone();
+            let pool_inner_clone = Arc::clone(&pool_inner);
+            let thread = thread::spawn(move || {
+                while let Ok(job) = receiver.recv() {
+                    pool_inner_clone.start_job();
+                    (job.0)();
+                    pool_inner_clone.finish_job();
+                }
+            });
+
+            workers.push(Worker {
+                _id: id,
+                thread: Some(thread),
+            });
+        }
+
+        ThreadPool {
+            _workers: workers,
+            job_sender: Some(sender),
+            pool_inner,
+        }
     }
 
     /// Execute a new job in the thread pool.
@@ -73,14 +101,17 @@ impl ThreadPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        todo!()
+        let job = Job(Box::new(f));
+        if let Some(sender) = &self.job_sender {
+            sender.send(job).expect("Thread pool has no sender");
+        }
     }
 
     /// Block the current thread until all jobs in the pool have been executed.
     ///
     /// NOTE: This method has nothing to do with `JoinHandle::join`.
     pub fn join(&self) {
-        todo!()
+        self.pool_inner.wait_empty();
     }
 }
 
@@ -88,6 +119,12 @@ impl Drop for ThreadPool {
     /// When dropped, all worker threads' `JoinHandle` must be `join`ed. If the thread panicked,
     /// then this function should panic too.
     fn drop(&mut self) {
-        todo!()
+        drop(self.job_sender.take()); // Drop the sender to close the channel and stop all threads.
+
+        for worker in &mut self._workers {
+            if let Some(thread) = worker.thread.take() {
+                thread.join().expect("Worker thread panicked");
+            }
+        }
     }
 }

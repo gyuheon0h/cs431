@@ -7,9 +7,8 @@ use std::sync::{Arc, Mutex, RwLock};
 /// Cache that remembers the result for each key.
 #[derive(Debug, Default)]
 pub struct Cache<K, V> {
-    // todo! This is an example cache type. Build your own cache type that satisfies the
     // specification for `get_or_insert_with`.
-    inner: Mutex<HashMap<K, V>>,
+    inner: Mutex<HashMap<K, Arc<Mutex<V>>>>,
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
@@ -28,6 +27,30 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
     ///
     /// [`Entry`]: https://doc.rust-lang.org/stable/std/collections/hash_map/struct.HashMap.html#method.entry
     pub fn get_or_insert_with<F: FnOnce(K) -> V>(&self, key: K, f: F) -> V {
-        todo!()
+        let mut guard = self.inner.lock().unwrap();
+
+        if let Some(arc_mutex_value) = guard.get(&key) {
+            // Clone the data inside the Arc<Mutex<V>>
+            return arc_mutex_value.lock().unwrap().clone();
+        }
+
+        // Temporarily drop the lock to allow other threads to access the cache
+        drop(guard);
+
+        // Compute the new value outside of the lock
+        let new_value = f(key.clone());
+
+        // Reacquire the lock to insert the new value
+        let mut guard = self.inner.lock().unwrap();
+
+        // Check again if the key was inserted by another thread while we were computing the value
+        match guard.entry(key) {
+            Entry::Occupied(entry) => entry.get().lock().unwrap().clone(),
+            Entry::Vacant(entry) => {
+                let arc_new_value = Arc::new(Mutex::new(new_value.clone()));
+                entry.insert(arc_new_value);
+                new_value
+            },
+        }
     }
 }
